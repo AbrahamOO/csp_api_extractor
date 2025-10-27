@@ -1,0 +1,15 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# macOS metadata
+.DS_Store
+
+# Local output directory with generated workbooks
+OUTPUT_FILES/
