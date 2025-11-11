@@ -12,7 +12,8 @@ def _load_json(path):
             return json.load(handle)
     except FileNotFoundError:
         return {}
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        print(f"⚠️ Unable to read cached service catalog ({exc}). Rebuilding it from scratch.")
         return {}
 
 
@@ -26,4 +27,3 @@ def load_service_cache():
 
 def save_service_cache(cache):
     _save_json(SERVICE_CACHE_PATH, cache)
-

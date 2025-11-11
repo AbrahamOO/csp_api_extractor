@@ -607,13 +607,128 @@ from extractors.aws_extractor import extract_aws_service_apis
 from extractors.azure_extractor import extract_azure_service_apis
 from writer.excel_writer import write_to_excel
 
+EXTRACTOR_MAP = {
+    "gcp": extract_gcp_service_apis,
+    "aws": extract_aws_service_apis,
+    "azure": extract_azure_service_apis,
+}
+
+
+def prompt_for_related_aws_variants(selected_service, available_services, auto_accept_all=False):
+    normalized = selected_service.lower()
+    root = normalized.split("-", 1)[0]
+
+    def is_related(candidate):
+        candidate_lower = candidate.lower()
+        if candidate_lower == normalized:
+            return False
+        if candidate_lower.startswith(normalized):
+            return True
+        candidate_root = candidate_lower.split("-", 1)[0]
+        return candidate_root == root and candidate_lower != normalized
+
+    related = [svc for svc in available_services if is_related(svc)]
+    if not related:
+        return [(selected_service, selected_service)]
+
+    if auto_accept_all:
+        return [(selected_service, selected_service)] + [(svc, svc) for svc in related]
+
+    print(f"ℹ️ The '{selected_service}' family includes additional AWS services: {', '.join(related)}")
+    while True:
+        choice = input(
+            "Include these related services as well? (Press Enter/yes for all, 'no' to keep only the base, or enter comma-separated names): "
+        ).strip()
+        if choice.lower() in {"", "yes", "y"}:
+            return [(selected_service, selected_service)] + [(svc, svc) for svc in related]
+        if choice.lower() in {"no", "n"}:
+            return [(selected_service, selected_service)]
+
+        requested = [item.strip() for item in choice.split(",") if item.strip()]
+        invalid = [svc for svc in requested if svc not in related]
+        if invalid:
+            print(f"❌ Unknown related services: {', '.join(invalid)}. Please choose from: {', '.join(related)}.")
+            continue
+        unique_requested = []
+        for svc in requested:
+            if svc not in unique_requested:
+                unique_requested.append(svc)
+        return [(selected_service, selected_service)] + [(svc, svc) for svc in unique_requested]
+
+
+def fetch_gcp_service_versions(service):
+    try:
+        resp = requests.get(GCP_DISCOVERY_URL, timeout=20)
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+    except Exception as exc:
+        print(f"⚠️ Could not retrieve GCP versions for '{service}': {exc}")
+        return []
+
+    versions = sorted({item.get("version") for item in items if item.get("name", "").lower() == service.lower() and item.get("version")})
+    return versions
+
+
+def prompt_for_gcp_versions(service):
+    versions = fetch_gcp_service_versions(service)
+    if not versions:
+        return [(service, service)]
+
+    if len(versions) == 1:
+        version = versions[0]
+        return [(f"{service}@{version}", f"{service} ({version})")]
+
+    ordered_versions = sorted(
+        versions,
+        key=lambda ver: (("beta" in ver.lower()) or ("alpha" in ver.lower()), ver),
+    )
+    print(f"ℹ️ '{service}' has multiple versions available:")
+    for idx, ver in enumerate(ordered_versions, start=1):
+        print(f"  [{idx}] {ver}")
+
+    default_version = next((ver for ver in ordered_versions if "beta" not in ver.lower() and "alpha" not in ver.lower()), ordered_versions[0])
+
+    while True:
+        prompt = input(
+            f"Select version number (e.g., 1), enter comma-separated numbers for multiple versions, type 'all', or press Enter for '{default_version}': "
+        ).strip().lower()
+        if not prompt:
+            return [(f"{service}@{default_version}", f"{service} ({default_version})")]
+        if prompt in {"all", "a"}:
+            return [(f"{service}@{ver}", f"{service} ({ver})") for ver in ordered_versions]
+        selections = [item.strip() for item in prompt.split(",") if item.strip()]
+        chosen = []
+        invalid = []
+        for selection in selections:
+            if not selection.isdigit():
+                invalid.append(selection)
+                continue
+            idx = int(selection)
+            if not (1 <= idx <= len(ordered_versions)):
+                invalid.append(selection)
+                continue
+            ver = ordered_versions[idx - 1]
+            if ver not in chosen:
+                chosen.append(ver)
+        if invalid:
+            print(f"❌ Invalid selection(s): {', '.join(invalid)}. Please try again.")
+            continue
+        if not chosen:
+            print("Please select at least one version.")
+            continue
+        return [(f"{service}@{ver}", f"{service} ({ver})") for ver in chosen]
+
 
 def main():
     print("📡 Extracting CSP APIs and writing to Excel...")
 
     project_root = Path(__file__).resolve().parent
     default_output_dir = project_root / "OUTPUT_FILES"
-    default_output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        default_output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"❌ Unable to create default output directory '{default_output_dir}': {exc}")
+        return
 
     service_cache = load_service_cache()
 
@@ -700,18 +815,59 @@ def main():
 
     output_path = output_path.resolve()
 
-    if provider == "gcp":
-        tree_data = extract_gcp_service_apis(service)
-    elif provider == "aws":
-        tree_data = extract_aws_service_apis(service)
-    elif provider == "azure":
-        tree_data = extract_azure_service_apis(service)
-    else:
-        print(f"❌ Unknown provider: {provider}")
+    extractor = EXTRACTOR_MAP.get(provider)
+    if extractor is None:
+        print(f"❌ No extractor configured for provider '{provider}'.")
         return
 
-    write_to_excel(tree_data, str(output_path), provider, service)
+    if provider == "aws":
+        service_variants = prompt_for_related_aws_variants(service, available_services)
+    elif provider == "gcp":
+        service_variants = prompt_for_gcp_versions(service)
+    else:
+        service_variants = [(service, service)]
+
+    variant_runs = []
+    for actual_service, display_service in service_variants:
+        label = display_service or actual_service
+        try:
+            tree_data = extractor(actual_service)
+        except RuntimeError as exc:
+            print(f"❌ {exc}")
+            continue
+        except Exception as exc:
+            print(f"❌ Unexpected error while extracting {provider.upper()} APIs for '{actual_service}': {exc}")
+            continue
+
+        if not tree_data:
+            print(f"⚠️ No API methods were returned for '{actual_service}'.")
+            continue
+
+        variant_runs.append({
+            "key": actual_service,
+            "label": label,
+            "data": tree_data,
+        })
+
+    if not variant_runs:
+        print("⚠️ Extraction completed but produced no data. Excel files were not created.")
+        return
+
+    try:
+        write_to_excel(variant_runs, str(output_path), provider)
+    except PermissionError:
+        print(f"❌ Unable to write to '{output_path}'. Close the file if it's open and try again.")
+        return
+    except OSError as exc:
+        print(f"❌ Failed to write Excel file '{output_path}': {exc}")
+        return
+
     print(f"✅ Done! API structure saved to: {output_path}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n❌ Operation cancelled by user.")
+    except EOFError:
+        print("\n❌ Input stream closed unexpectedly. Please rerun the command.")

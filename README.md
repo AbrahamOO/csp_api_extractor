@@ -1,6 +1,6 @@
 ## CSP API Extractor
 
-Collects API shapes from AWS, GCP, and Azure services and exports a tree of operations/methods and request parameters into a structured Excel workbook. The tool automates service discovery, prompts for the cloud/service you want to inspect, and produces provider-specific spreadsheet layouts that make it easy to audit available APIs.
+CSP API Extractor inspects AWS, GCP, and Azure services and exports a tree of operations/methods plus request parameters into a structured Excel workbook. The tool automates service discovery, prompts for the cloud/service you want to inspect, and produces provider-specific spreadsheet layouts that make it easy to audit available APIs.
 
 ---
 
@@ -10,13 +10,14 @@ Collects API shapes from AWS, GCP, and Azure services and exports a tree of oper
 - **Provider-specific extractors**
   - *AWS*: loads the Botocore `service-2` models to enumerate every API action and its request shape.
   - *GCP*: walks the Discovery document for the chosen service, covering top-level and nested REST resources.
-  - *Azure*: placeholder sample tree (can be swapped with a real OpenAPI parser later).
+  - *Azure*: pulls the live OpenAPI (Swagger) specs from the Azure REST API repo, parses the real request schemas, and outputs production-ready parameter trees.
 - **Excel writer tailored per CSP**
   - AWS sheets show `<service> API Action` followed by hierarchical parameter levels.
   - GCP sheets show `<service> REST Resource`, `API Method`, and parameter levels.
   - Azure sheets show `<service> Resource Operation`, `API Method`, and parameter levels.
   - Required fields are annotated with `(required)` and the header row is frozen for easier scanning.
 - **Guided CLI workflow** – prompts for provider/service (with an `L` shortcut to list services in a padded table), pre-fills a default filename (`<csp>-<service>-api-extract.xlsx`), and offers to save into the local `OUTPUT_FILES` directory.
+- **Version-aware selection** – the CLI detects related AWS service variants (for example, every SageMaker runtime, even if you start from `sagemaker-runtime`) and the available GCP API versions. Each variant/version gets its own worksheet inside the generated workbook so their actions and parameters are never mixed.
 
 ---
 
@@ -34,32 +35,74 @@ Collects API shapes from AWS, GCP, and Azure services and exports a tree of oper
 
 ---
 
-### Prerequisites
+### Get the Code
 
-1. Python 3.8+ (project developed/tested with 3.8).
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. AWS extractor needs access to Botocore models (bundled with the installed package). No AWS credentials are required because it only inspects the local service descriptions.
+If you have not pulled the project yet, clone it and switch into the folder:
+
+```bash
+git clone <csp_api_extractor repo>
+cd csp_api_extractor
+```
+
+(You can also unzip a downloaded archive—the remaining steps simply assume your terminal is already inside the project directory.)
 
 ---
 
-### Usage
+### What You Need
+
+- Python 3.8+ installed (run `python --version` to double-check).
+- Internet access the first time you list services for a provider (catalogs are cached afterward).
+- No cloud credentials are required. The tool only reads the public API descriptions that ship with Google/AWS SDKs or the Azure REST spec repo.
+
+---
+
+### How to Run
+
+1. Open a terminal (macOS Terminal, Windows Terminal, etc.) and `cd` into this project.
+2. Run the extractor:
+   ```bash
+   python run_extractor.py
+   ```
+3. Respond to the prompts:
+   - Enter the provider (`aws`, `gcp`, or `azure`).
+   - Enter the service you want (press `L` or `l` to print the full service list). When prompted, include any AWS service variants (all SageMaker runtimes, Lex v2, etc.) or pick the precise GCP API versions (`v1`, `beta`, etc.). Every variant/version becomes its own worksheet inside the same Excel file.
+   - Press Enter to accept the suggested Excel file name and the default `OUTPUT_FILES/` folder, or type your own choices. If you select multiple variants/versions, the workbook automatically gains one sheet per selection.
+4. Wait for the confirmation line that shows the exact path to the generated workbook.
+
+`run_extractor.py` sets up an isolated `.venv`, installs/updates the dependencies when `requirements.txt` changes, and launches the CLI. You do not need to manage Python packages manually.
+
+---
+
+### Direct CLI (Advanced / Existing Environments)
+
+`fetch_api_params.py` remains fully supported. If you already manage dependencies yourself (for example, inside an existing virtual environment or CI job), run:
 
 ```bash
+pip install -r requirements.txt
 python fetch_api_params.py
 ```
 
-Interactive flow:
+This bypasses the helper `.venv` that `run_extractor.py` creates while keeping identical functionality.
 
-1. **Provider** – enter `aws`, `gcp`, or `azure`.
-2. **Service** – type the service identifier (use `L`/`l` to print the available services in a table).
-3. **Output file** – accept the suggested `<csp>-<service>-api-extract.xlsx` by pressing Enter/yes or supply a custom name.
-4. **Destination** – press Enter/yes to save into `OUTPUT_FILES/`, or choose “no” to provide a full path.
-5. Wait for extraction; the script prints the resolved file path once complete.
+---
 
-Tip: reruns automatically merge any newly discovered services into `service_catalog_cache.json`.
+Interactive flow recap:
+
+1. **Provider** – `aws`, `gcp`, or `azure`.
+2. **Service** – type the identifier; use `L` to list available services. When prompted, include related AWS service variants or pick specific GCP versions as needed (each selection generates its own worksheet).
+3. **Output file** – accept `<csp>-<service>-api-extract.xlsx` or provide a custom name (the `.xlsx` extension is added if missing).
+4. **Destination** – press Enter to save inside `OUTPUT_FILES/`, or choose “no” to enter a custom directory or full path.
+5. The script prints the absolute path to your Excel file once extraction finishes. Re-running automatically refreshes the cached service catalog whenever a newer list is available.
+
+---
+
+### Troubleshooting
+
+- **“Unable to create default output directory”** – verify you have write permission to the project folder. Running the terminal as an administrator (Windows) or saving to another directory usually fixes it.
+- **“Unable to write to `<file>.xlsx`”** – Excel (or another app) might have the file open. Close it and rerun.
+- **Network errors when refreshing services** – the tool falls back to the cached/bundled list and prints a warning. Re-run when you’re back online to refresh.
+- **“Service '<name>' not found”** – make sure you used the provider’s canonical service name. Use the `L` shortcut to copy-paste an exact identifier.
+- **Unexpected crash/stack trace** – rerun via `python run_extractor.py` so dependencies are installed in a clean `.venv`. If the problem persists, re-run with `L` to confirm the service exists, then share the console output when reporting the issue.
 
 ---
 
@@ -67,13 +110,14 @@ Tip: reruns automatically merge any newly discovered services into `service_cata
 
 | Provider | Columns | Notes |
 | --- | --- | --- |
-| AWS | `<service> API Action`, `Level 1..N` | Each action appears once; its parameter tree fills the Level columns with blank action cells on child rows. |
-| GCP | `<service> REST Resource`, `API Method`, `Level 1..N` | Resources group their methods, and method rows expand with parameter trees. |
+| AWS | `<service> API Action`, `Level 1..N` | Each worksheet covers a single AWS service or variant (for example, `sagemaker-runtime`), and every action’s request tree is indented beneath it. |
+| GCP | `<service> REST Resource`, `API Method`, `Level 1..N` | Each worksheet corresponds to one GCP API version (v1, beta, etc.); resources group their methods and parameter trees. |
 | Azure | `<service> Resource Operation`, `API Method`, `Level 1..N` | Same layout as GCP but tailored for Azure terminology. |
 
 - `Level` columns expand dynamically beyond Level 5 to accommodate deeply nested schemas.
 - Required parameters include `(required)` in their label.
-- The workbook tab is named “API Methods” and row 1 is frozen.
+- Map/dictionary parameters expand into nested Key/Value rows so even complex SageMaker bodies remain readable.
+- Each worksheet is named after the chosen service/variant (sanitized to Excel’s length limits) and row 1 is frozen for easy scrolling.
 
 ---
 
@@ -87,12 +131,12 @@ Tip: reruns automatically merge any newly discovered services into `service_cata
 
 ---
 
-### Extending or Troubleshooting
+### Extending
 
-- **Azure extractor** is currently a stub. Replace `extractors/azure_extractor.py` with logic that downloads and parses the official OpenAPI specs for production use.
+- **Azure OpenAPI tweaks** – update `extractors/azure_extractor.py` if you want to choose different tags/input files or cache the downloaded Swagger documents locally.
 - **GCP rate limits** – if you hit API quotas, consider caching Discovery documents locally.
-- **Excel formatting tweaks** – adjust `writer/excel_writer.py` to add styling, filters, or alternate sheet layouts.
-- **Debug logs** – wrap extractor calls in try/except blocks (in `fetch_api_params.py`) and add logging if you need finer-grained error reporting.
+- **Excel formatting** – adjust `writer/excel_writer.py` to add styling, filters, or alternate sheet layouts.
+- **Additional logging** – wrap extractor calls in try/except blocks (in `fetch_api_params.py`) and add logging if you need finer-grained diagnostics.
 
 ---
 
