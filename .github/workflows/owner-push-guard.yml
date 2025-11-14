@@ -1,0 +1,20 @@
+name: Owner Push Guard
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  restrict-direct-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allow only owner pushes
+        env:
+          OWNER: AbrahamOO
+        run: |
+          if [[ "${GITHUB_ACTOR}" != "${OWNER}" ]]; then
+            echo "::error ::Direct pushes to main are reserved for ${OWNER}. Submit a pull request instead."
+            exit 1
+          fi
+          echo "Push verified: ${OWNER}."
