@@ -13,3 +13,6 @@ env/
 
 # Local output directory with generated workbooks
 OUTPUT_FILES/
+
+# GitHub Actions workflows (owner-specific, not needed in repo)
+.github/workflows/
